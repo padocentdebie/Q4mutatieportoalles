@@ -284,6 +284,11 @@
                 <option value="MIKE">MIKE</option>
             </select>
         </div>
+        <!-- NIEUW: Docentcode veld -->
+        <div class="form-group">
+            <label>🔑 Docentcode (optioneel)</label>
+            <input type="password" id="teacherCode" placeholder="Alleen voor docent" />
+        </div>
         <button class="btn btn-success" id="connectBtn">🔗 Verbinden</button>
         <div id="loginError" class="error"></div>
 
@@ -296,11 +301,8 @@
             </div>
             <div class="instructie-stap">
                 <strong>Stap 2: Open deze link</strong>
-                <p>Typ in de adresbalk: <code>https://padocentdebie.github.io/Q4mutatieportoalles/  , of scan deze qr-code:</code></p>
-                  <img src="deze.jpg" alt="QR-code voor Q4mutatieportoalles" style="width: 150px; height: 150px; border-radius: 8px; border: 2px solid #2a3a4a;">
-                </div>
-
-                
+                <p>Typ in de adresbalk: <code>https://padocentdebie.github.io/Q4mutatieportoalles/</code>, of scan deze QR-code:</p>
+                <img src="deze.jpg" alt="QR-code voor Q4mutatieportoalles" style="width: 150px; height: 150px; border-radius: 8px; border: 2px solid #2a3a4a;">
             </div>
             <div class="instructie-stap">
                 <strong>Stap 3: Log in</strong>
@@ -308,7 +310,7 @@
             </div>
             <div class="instructie-stap">
                 <strong>Stap 4: Jouw rol</strong>
-                <p>De <strong>eerste drie</strong> studenten krijgen de rollen <strong>Burger, Collega1, Collega2</strong>. Alle volgende studenten worden <strong>Meldkamer</strong>.</p>
+                <p>De <strong>docent</strong> wijst de rollen toe. Zodra de docent een rol heeft toegewezen, zie je die in het rolbadge.</p>
                 <ul>
                     <li><strong>Burger:</strong> Heeft informatie, maar <span class="waarschuwing">geen PTT</span> (geen spraak).</li>
                     <li><strong>Collega 1 & 2:</strong> Agenten met PTT, spreken via de porto.</li>
@@ -349,6 +351,8 @@
             <button class="tab-btn" data-tab="tab-mutatie">📝 Mutatie</button>
             <button class="tab-btn" data-tab="tab-feed">📋 Livefeed</button>
             <button class="tab-btn" data-tab="tab-info">📋 Rollen</button>
+            <!-- NIEUW: Admin tab (alleen voor docent) -->
+            <button class="tab-btn" data-tab="tab-admin" id="adminTabBtn" style="display:none;">🔧 Beheer</button>
         </div>
 
         <!-- TAB PORTO -->
@@ -433,12 +437,23 @@
                 </div>
             </div>
         </div>
+
+        <!-- NIEUW: TAB BEHEER (alleen voor docent) -->
+        <div id="tab-admin" class="tab-content">
+            <div class="container">
+                <h2>🔧 Beheer rollen</h2>
+                <p class="sub">Wijs rollen toe aan deelnemers.</p>
+                <div id="adminPeerList"></div>
+                <button class="btn btn-primary" id="adminSaveBtn">💾 Opslaan</button>
+                <div class="save-indicator" id="adminSaveIndicator"></div>
+            </div>
+        </div>
     </div>
 </div>
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getDatabase, ref, set, onValue, remove, onDisconnect, serverTimestamp, push } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+    import { getDatabase, ref, set, onValue, remove, onDisconnect, serverTimestamp, push, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyBOo2LzR1IBnsiBR2SCwPJABtaRv0tpKQ4",
@@ -531,7 +546,7 @@
     const chatInput = $('chatInput');
     const chatSendBtn = $('chatSendBtn');
     const disconnectBtn = $('disconnectBtn');
-    const resetBtn = $('resetBtn'); // Nieuw
+    const resetBtn = $('resetBtn');
     const mutWie = $('mutWie');
     const mutWat = $('mutWat');
     const mutWaar = $('mutWaar');
@@ -547,6 +562,12 @@
     const feedKlas = $('feedKlas');
     const currentCaseName = $('currentCaseName');
     const nextCaseBtn = $('nextCaseBtn');
+    // Nieuwe referenties
+    const teacherCodeInput = $('teacherCode');
+    const adminTabBtn = $('adminTabBtn');
+    const adminPeerList = $('adminPeerList');
+    const adminSaveBtn = $('adminSaveBtn');
+    const adminSaveIndicator = $('adminSaveIndicator');
 
     // ----- STATE -----
     let peer = null;
@@ -567,12 +588,14 @@
     let microEnabled = false;
     let isMicInitializing = false;
     let isAdmin = false;
+    let isTeacher = false; // NIEUW
     let caseUnsubscribe = null;
     let mutatieUnsubscribe = null;
     let audioContextStarted = false;
-    // ----- AUDIO VARIABELEN (toegevoegd) -----
+    let myPeerListener = null; // NIEUW
     let allAudioElements = [];
     let audioUnmuted = false;
+    const TEACHER_CODE = "docent123"; // NIEUW - pas aan indien gewenst
 
     function generateId() { return 'P-' + Math.random().toString(36).substr(2, 8); }
 
@@ -643,10 +666,9 @@
             microStatus.textContent = '✅ Microfoon gereed';
             microStatus.className = 'micro-status ok';
             retryMicBtn.classList.add('hidden');
-            // --- AANGEPAST: PTT voor alle rollen beschikbaar ---
+            // PTT voor alle rollen beschikbaar
             pttButton.disabled = false;
             pttButton.classList.remove('disabled');
-            // ------------------------------------------------
             if (isConnected) {
                 for (let peerId of connections) {
                     if (!audioConnections.has(peerId)) {
@@ -689,9 +711,7 @@
     // ----- PTT -----
     function startSpeaking() {
         unmuteAllAudio();
-        // --- AANGEPAST: rolblokkade verwijderd ---
         if (!isConnected || !microEnabled || isSpeaking) return;
-        // -----------------------------------------
         startAudioContext();
         isSpeaking = true;
         pttButton.classList.add('active');
@@ -718,9 +738,7 @@
             startAudioContext();
             const audio = document.createElement('audio');
             audio.autoplay = true;
-            // --- AANGEPAST: audio niet meer dempen ---
             audio.muted = false;
-            // --------------------------------------
             audio.srcObject = remoteStream;
             audio.volume = 1.0;
             document.body.appendChild(audio);
@@ -750,11 +768,9 @@
             connections.add(peerId);
             dataConnections.set(peerId, conn);
             conn.send({ type: 'hello', username: myUsername, role: myRole, class: myClass });
-            // --- AANGEPAST: geen rolcontrole meer ---
             if (microEnabled && localStream) {
                 callPeer(peerId);
             }
-            // ------------------------------------
             updateUserList();
             addChat('🔗', `${peerId} is verbonden`, true);
         });
@@ -795,6 +811,31 @@
         });
         onDisconnect(myPeerRef).remove();
 
+        // Luister naar veranderingen van eigen rol (docent kan rol aanpassen)
+        myPeerListener = onValue(myPeerRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data && data.role && data.role !== myRole) {
+                myRole = data.role;
+                roleDisplay.textContent = myRole;
+                // Kleur aanpassen
+                if (myRole === 'Burger') roleDisplay.style.background = '#6c757d';
+                else if (myRole === 'Meldkamer') { roleDisplay.style.background = '#f0c040'; roleDisplay.style.color = '#1a2332'; }
+                else if (myRole === 'Docent') { roleDisplay.style.background = '#f0c040'; roleDisplay.style.color = '#1a2332'; }
+                else roleDisplay.style.background = '#28a745';
+                // Mutatie-tab zichtbaarheid
+                const mutatieTab = document.querySelector('[data-tab="tab-mutatie"]');
+                if (myRole === 'Meldkamer') mutatieTab.style.display = 'block';
+                else mutatieTab.style.display = 'none';
+                // Rol-info updaten
+                updateRoleInfo();
+                // Als admin, admin-lijst updaten
+                if (isAdmin) {
+                    const peersSnap = get(peersRef); // of we gebruiken de bestaande listener
+                }
+            }
+        });
+
+        // Bestaande peer-list listener
         if (peerListUnsubscribe) peerListUnsubscribe();
         peerListUnsubscribe = onValue(peersRef, (snapshot) => {
             const data = snapshot.val();
@@ -811,22 +852,60 @@
                     }
                 }
             }
+            // Admin-lijst bijwerken als docent
+            if (isAdmin) renderAdminList(data);
         });
     }
 
     // ----- ROLTOEWIJZING -----
-    async function assignRole() {
-        const peersRef = ref(db, `porto_peers/${myClass}`);
-        const snapshot = await new Promise(resolve => onValue(peersRef, resolve, { onlyOnce: true }));
+    // Vervangen door functie die rol uit DB haalt, of docentrol
+    async function fetchMyRole() {
+        if (isTeacher) return 'Docent';
+        const myPeerRef = ref(db, `porto_peers/${myClass}/${myId}`);
+        const snapshot = await get(myPeerRef);
         const data = snapshot.val();
-        const count = data ? Object.keys(data).length : 0;
-        let role;
-        if (count === 0) role = 'Burger';
-        else if (count === 1) role = 'Collega1';
-        else if (count === 2) role = 'Collega2';
-        else role = 'Meldkamer';
-        const isAdmin = (count === 3);
-        return { role, isAdmin };
+        return (data && data.role) ? data.role : 'Burger';
+    }
+
+    // ----- ADMIN FUNCTIES -----
+    function renderAdminList(data) {
+        if (!data) {
+            adminPeerList.innerHTML = '<div class="empty-state">Geen deelnemers.</div>';
+            return;
+        }
+        let html = '';
+        for (let [id, peer] of Object.entries(data)) {
+            if (id === myId) continue; // sla jezelf over
+            html += `
+                <div class="admin-peer-row" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                    <span style="flex:1;">${peer.username || id} (${id})</span>
+                    <select class="role-select" data-peer-id="${id}" style="width:120px;">
+                        <option value="Burger" ${peer.role === 'Burger' ? 'selected' : ''}>Burger</option>
+                        <option value="Collega1" ${peer.role === 'Collega1' ? 'selected' : ''}>Collega1</option>
+                        <option value="Collega2" ${peer.role === 'Collega2' ? 'selected' : ''}>Collega2</option>
+                        <option value="Meldkamer" ${peer.role === 'Meldkamer' ? 'selected' : ''}>Meldkamer</option>
+                    </select>
+                </div>
+            `;
+        }
+        adminPeerList.innerHTML = html || '<div class="empty-state">Geen deelnemers.</div>';
+    }
+
+    function saveAdminRoles() {
+        const selects = document.querySelectorAll('.role-select');
+        const updates = [];
+        selects.forEach(sel => {
+            const peerId = sel.dataset.peerId;
+            const role = sel.value;
+            updates.push(set(ref(db, `porto_peers/${myClass}/${peerId}/role`), role));
+        });
+        Promise.all(updates).then(() => {
+            adminSaveIndicator.textContent = '✅ Rollen opgeslagen!';
+            adminSaveIndicator.className = 'save-indicator saved';
+        }).catch(err => {
+            adminSaveIndicator.textContent = '❌ Fout: ' + err.message;
+            adminSaveIndicator.className = 'save-indicator';
+        });
     }
 
     // ----- CASUS BEHEER -----
@@ -965,7 +1044,7 @@
             return;
         }
         const roles = currentScenario.rollen;
-        const myInfo = roles[myRole] ? roles[myRole].info : 'Geen informatie voor deze rol.';
+        const myInfo = roles[myRole] ? roles[myRole].info : (myRole === 'Docent' ? 'Je bent docent. Je kunt deelnemers beheren.' : 'Geen informatie voor deze rol.');
         myRoleInfo.textContent = myInfo;
 
         let otherHtml = '';
@@ -980,7 +1059,6 @@
     async function resetAll() {
         if (!confirm('⚠️ Weet je zeker dat je ALLE gebruikers wilt verwijderen en de casus wilt resetten? Dit kan niet ongedaan worden gemaakt.')) return;
 
-        // Verwijder alle peers, cases en mutaties
         try {
             await remove(ref(db, `porto_peers/${myClass}`));
             await remove(ref(db, `cases/${myClass}`));
@@ -989,7 +1067,6 @@
             console.error('Fout bij resetten:', err);
         }
 
-        // Eigen verbinding verbreken en terug naar login
         if (peer) {
             peer.destroy();
             peer = null;
@@ -1001,6 +1078,7 @@
         if (peerListUnsubscribe) peerListUnsubscribe();
         if (caseUnsubscribe) caseUnsubscribe();
         if (mutatieUnsubscribe) mutatieUnsubscribe();
+        if (myPeerListener) myPeerListener();
         if (localStream) {
             localStream.getTracks().forEach(t => t.stop());
             localStream = null;
@@ -1020,7 +1098,7 @@
         retryMicBtn.classList.add('hidden');
         resetBtn.style.display = 'none';
         nextCaseBtn.style.display = 'none';
-        // Reset formulier
+        adminTabBtn.style.display = 'none';
         mutWie.value = mutWat.value = mutWaar.value = mutWaarmee.value = mutWijze.value = mutWaarom.value = '';
         mutWanneer.value = '';
         saveIndicator.textContent = '';
@@ -1044,9 +1122,18 @@
         myClass = klas;
         myId = generateId();
 
-        const { role, isAdmin: admin } = await assignRole();
-        myRole = role;
-        isAdmin = admin;
+        // Controleer docentcode
+        const teacherCode = teacherCodeInput.value.trim();
+        if (teacherCode === TEACHER_CODE) {
+            isTeacher = true;
+            myRole = 'Docent';
+            isAdmin = true;
+        } else {
+            isTeacher = false;
+            // Haal rol op uit Firebase (indien al toegewezen)
+            myRole = await fetchMyRole();
+            isAdmin = false;
+        }
 
         currentCaseIndex = 0;
         currentScenario = SCENARIOS[0];
@@ -1055,7 +1142,7 @@
         roleDisplay.textContent = myRole;
         if (myRole === 'Burger') {
             roleDisplay.style.background = '#6c757d';
-        } else if (myRole === 'Meldkamer') {
+        } else if (myRole === 'Meldkamer' || myRole === 'Docent') {
             roleDisplay.style.background = '#f0c040';
             roleDisplay.style.color = '#1a2332';
         } else {
@@ -1072,10 +1159,17 @@
             mutatieTab.style.display = 'none';
         }
 
+        // Admin-tab alleen zichtbaar voor docent
+        if (isAdmin) {
+            adminTabBtn.style.display = 'block';
+        } else {
+            adminTabBtn.style.display = 'none';
+        }
+
         if (isAdmin) {
             nextCaseBtn.style.display = 'block';
             nextCaseBtn.onclick = nextCase;
-            resetBtn.style.display = 'inline-block'; // Resetknop tonen voor admin
+            resetBtn.style.display = 'inline-block';
             resetBtn.onclick = resetAll;
         } else {
             nextCaseBtn.style.display = 'none';
@@ -1139,9 +1233,7 @@
                 startAudioContext();
                 const audio = document.createElement('audio');
                 audio.autoplay = true;
-                // --- AANGEPAST: audio niet meer dempen ---
                 audio.muted = false;
-                // --------------------------------------
                 audio.srcObject = remoteStream;
                 audio.volume = 1.0;
                 document.body.appendChild(audio);
@@ -1203,6 +1295,8 @@
 
     submitMutatieBtn.addEventListener('click', submitMutatie);
 
+    adminSaveBtn.addEventListener('click', saveAdminRoles);
+
     disconnectBtn.addEventListener('click', () => {
         if (peer) peer.destroy();
         connections.clear();
@@ -1214,6 +1308,7 @@
         audioConnections.clear();
         isConnected = false;
         if (peerListUnsubscribe) peerListUnsubscribe();
+        if (myPeerListener) myPeerListener();
         if (peersRef) {
             const myPeerRef = ref(db, `porto_peers/${myClass}/${myId}`);
             remove(myPeerRef);
@@ -1239,6 +1334,7 @@
         retryMicBtn.classList.add('hidden');
         resetBtn.style.display = 'none';
         nextCaseBtn.style.display = 'none';
+        adminTabBtn.style.display = 'none';
     });
 
     // Tab switching
