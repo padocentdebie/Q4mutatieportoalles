@@ -310,7 +310,7 @@
             </div>
             <div class="instructie-stap">
                 <strong>Stap 4: Jouw rol</strong>
-                <p>De <strong>docent</strong> wijst de rollen toe. Zodra de docent een rol heeft toegewezen, zie je die in het rolbadge.</p>
+                <p>De <strong>docent</strong> wijst de rollen toe. Zodra de docent een rol heeft toegewezen, zie je die in het rolbadge en in het tabblad <strong>Rollen</strong>.</p>
                 <ul>
                     <li><strong>Burger:</strong> Heeft informatie, maar <span class="waarschuwing">geen PTT</span> (geen spraak).</li>
                     <li><strong>Collega 1 & 2:</strong> Agenten met PTT, spreken via de porto.</li>
@@ -421,6 +421,19 @@
                 <h2>📋 Livefeed - Klas <span id="feedKlas">-</span></h2>
                 <p class="sub">Laatste mutatie ter controle</p>
                 <div id="livefeedContainer"><div class="empty-state">⏳ Wachten op mutatie...</div></div>
+            </div>
+
+            <!-- NIEUW: Live berichten sectie -->
+            <div class="container" style="margin-top:16px;">
+                <h2>📢 Live berichten</h2>
+                <p class="sub">Deel informatie real-time met de klas.</p>
+                <div class="form-group">
+                    <textarea id="liveMsgInput" placeholder="Typ hier je bericht..." style="min-height:60px;"></textarea>
+                </div>
+                <button class="btn btn-primary" id="liveMsgSendBtn">📨 Verstuur bericht</button>
+                <div id="liveMsgContainer" style="margin-top:12px;">
+                    <!-- Hier komen de live berichten -->
+                </div>
             </div>
         </div>
 
@@ -568,6 +581,10 @@
     const adminPeerList = $('adminPeerList');
     const adminSaveBtn = $('adminSaveBtn');
     const adminSaveIndicator = $('adminSaveIndicator');
+    // Nieuwe live feed referenties
+    const liveMsgInput = $('liveMsgInput');
+    const liveMsgSendBtn = $('liveMsgSendBtn');
+    const liveMsgContainer = $('liveMsgContainer');
 
     // ----- STATE -----
     let peer = null;
@@ -596,6 +613,8 @@
     let allAudioElements = [];
     let audioUnmuted = false;
     const TEACHER_CODE = "docent123"; // NIEUW - pas aan indien gewenst
+    // Nieuwe variabele voor live feed listener
+    let liveMsgUnsubscribe = null;
 
     function generateId() { return 'P-' + Math.random().toString(36).substr(2, 8); }
 
@@ -783,6 +802,10 @@
             if (data.type === 'chat') {
                 addChat(`${data.sender} (${data.role})`, data.text);
             }
+            // NIEUW: ontvang rollen-update
+            if (data.type === 'rolesUpdated') {
+                updateRoleInfo();
+            }
         });
 
         conn.on('close', () => {
@@ -828,10 +851,6 @@
                 else mutatieTab.style.display = 'none';
                 // Rol-info updaten
                 updateRoleInfo();
-                // Als admin, admin-lijst updaten
-                if (isAdmin) {
-                    const peersSnap = get(peersRef); // of we gebruiken de bestaande listener
-                }
             }
         });
 
@@ -858,7 +877,6 @@
     }
 
     // ----- ROLTOEWIJZING -----
-    // Vervangen door functie die rol uit DB haalt, of docentrol
     async function fetchMyRole() {
         if (isTeacher) return 'Docent';
         const myPeerRef = ref(db, `porto_peers/${myClass}/${myId}`);
@@ -902,6 +920,12 @@
         Promise.all(updates).then(() => {
             adminSaveIndicator.textContent = '✅ Rollen opgeslagen!';
             adminSaveIndicator.className = 'save-indicator saved';
+            // NIEUW: stuur een melding naar alle deelnemers dat de rollen zijn bijgewerkt
+            for (let conn of dataConnections.values()) {
+                try {
+                    conn.send({ type: 'rolesUpdated', sender: myUsername, role: myRole, class: myClass });
+                } catch(e) {}
+            }
         }).catch(err => {
             adminSaveIndicator.textContent = '❌ Fout: ' + err.message;
             adminSaveIndicator.className = 'save-indicator';
@@ -983,7 +1007,7 @@
         });
     }
 
-    // ----- LIVEFEED -----
+    // ----- LIVEFEED (bestaande) -----
     function loadLivefeed() {
         const mutRef = getMutatieRef();
         if (mutatieUnsubscribe) mutatieUnsubscribe();
@@ -1032,6 +1056,89 @@
         });
     }
 
+    // ----- LIVEFEED (nieuwe live berichten) -----
+    function loadLiveMessages() {
+        const liveRef = ref(db, `liveberichten/${myClass}`);
+        if (liveMsgUnsubscribe) liveMsgUnsubscribe();
+        liveMsgUnsubscribe = onValue(liveRef, (snapshot) => {
+            const data = snapshot.val();
+            if (!data) {
+                liveMsgContainer.innerHTML = '<div class="empty-state">Nog geen berichten.</div>';
+                return;
+            }
+            let html = '';
+            const entries = Object.entries(data).sort((a, b) => (a[1].timestamp || 0) - (b[1].timestamp || 0));
+            entries.forEach(([id, msg]) => {
+                const tijd = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('nl-NL') : '';
+                html += `
+                    <div class="livefeed-item" style="border-left-color:#28a745;">
+                        <div class="header">
+                            <span class="auteur">📢 ${msg.auteur || '?'} (${msg.rol || '?'})</span>
+                            <span>${tijd}</span>
+                        </div>
+                        <div class="fields">
+                            <div>${msg.text || ''}</div>
+                        </div>
+                        <div class="feedback-block" style="margin-top:6px;">
+                            <input type="text" placeholder="💬 Reactie..." id="feedback-${id}" style="flex:1; margin-right:4px; padding:6px; border-radius:6px; border:1px solid #2a3a4a; background:#0d1624; color:#e0e0e0; font-size:0.85rem;">
+                            <button class="btn btn-secondary" style="width:auto; padding:6px 12px; margin-top:0;" onclick="addFeedback('${id}')">Reageer</button>
+                        </div>
+                        <div class="feedback-list" style="margin-top:4px;">
+                            ${renderFeedback(msg.feedback || {})}
+                        </div>
+                    </div>
+                `;
+            });
+            liveMsgContainer.innerHTML = html;
+        });
+    }
+
+    function renderFeedback(feedbackObj) {
+        if (!feedbackObj || Object.keys(feedbackObj).length === 0) return '';
+        let html = '';
+        for (let [fbId, fb] of Object.entries(feedbackObj)) {
+            const tijd = fb.timestamp ? new Date(fb.timestamp).toLocaleTimeString('nl-NL') : '';
+            html += `<div style="margin-top:2px; font-size:0.8rem; color:#aabbcc;"><strong style="color:#f0c040;">${fb.auteur}:</strong> ${fb.text} <span style="color:#667788;">(${tijd})</span></div>`;
+        }
+        return html;
+    }
+
+    // ----- NIEUW: verzenden van live bericht -----
+    function sendLiveMessage() {
+        const text = liveMsgInput.value.trim();
+        if (!text) return;
+        const liveRef = ref(db, `liveberichten/${myClass}`);
+        const newRef = push(liveRef);
+        set(newRef, {
+            text: text,
+            auteur: myUsername,
+            rol: myRole,
+            timestamp: serverTimestamp()
+        }).then(() => {
+            liveMsgInput.value = '';
+        }).catch(err => {
+            console.error('Fout bij verzenden:', err);
+        });
+    }
+
+    // ----- NIEUW: feedback toevoegen -----
+    window.addFeedback = function(msgId) {
+        const input = document.getElementById(`feedback-${msgId}`);
+        const feedbackText = input ? input.value.trim() : '';
+        if (!feedbackText) return;
+        const feedbackRef = ref(db, `liveberichten/${myClass}/${msgId}/feedback`);
+        const newRef = push(feedbackRef);
+        set(newRef, {
+            text: feedbackText,
+            auteur: myUsername,
+            timestamp: serverTimestamp()
+        }).then(() => {
+            input.value = '';
+        }).catch(err => {
+            console.error('Fout bij feedback:', err);
+        });
+    };
+
     // ----- ROLINFO -----
     function updateRoleInfo() {
         if (!myRoleInfo) {
@@ -1063,6 +1170,7 @@
             await remove(ref(db, `porto_peers/${myClass}`));
             await remove(ref(db, `cases/${myClass}`));
             await remove(ref(db, `mutaties/${myClass}`));
+            await remove(ref(db, `liveberichten/${myClass}`));
         } catch (err) {
             console.error('Fout bij resetten:', err);
         }
@@ -1078,6 +1186,7 @@
         if (peerListUnsubscribe) peerListUnsubscribe();
         if (caseUnsubscribe) caseUnsubscribe();
         if (mutatieUnsubscribe) mutatieUnsubscribe();
+        if (liveMsgUnsubscribe) liveMsgUnsubscribe();
         if (myPeerListener) myPeerListener();
         if (localStream) {
             localStream.getTracks().forEach(t => t.stop());
@@ -1103,6 +1212,7 @@
         mutWanneer.value = '';
         saveIndicator.textContent = '';
         livefeedContainer.innerHTML = '<div class="empty-state">⏳ Wachten op mutatie...</div>';
+        liveMsgContainer.innerHTML = '';
     }
 
     // ----- HOOFDFUNCTIE (verbinden) -----
@@ -1178,6 +1288,7 @@
 
         feedKlas.textContent = myClass;
         loadLivefeed();
+        loadLiveMessages(); // NIEUW
 
         currentCaseName.textContent = currentScenario.naam;
         updateRoleInfo();
@@ -1297,6 +1408,10 @@
 
     adminSaveBtn.addEventListener('click', saveAdminRoles);
 
+    // NIEUW: live bericht verzenden
+    liveMsgSendBtn.addEventListener('click', sendLiveMessage);
+    liveMsgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendLiveMessage(); });
+
     disconnectBtn.addEventListener('click', () => {
         if (peer) peer.destroy();
         connections.clear();
@@ -1309,6 +1424,7 @@
         isConnected = false;
         if (peerListUnsubscribe) peerListUnsubscribe();
         if (myPeerListener) myPeerListener();
+        if (liveMsgUnsubscribe) liveMsgUnsubscribe();
         if (peersRef) {
             const myPeerRef = ref(db, `porto_peers/${myClass}/${myId}`);
             remove(myPeerRef);
