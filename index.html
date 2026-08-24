@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>📻 Porto - Lesmutatie</title>
     <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <!-- Leaflet CSS en JS toevoegen -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         /* Alle stijlen blijven identiek */
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -253,6 +256,15 @@
             color: #e0e0e0;
             font-size: 0.9rem;
         }
+        /* Kaart styling */
+        #map {
+            height: 300px;
+            width: 100%;
+            border-radius: 12px;
+            border: 2px solid #2a3a4a;
+            margin-top: 12px;
+            background: #0d1624;
+        }
     </style>
 </head>
 <body>
@@ -383,6 +395,9 @@
                     <input type="text" id="chatInput" placeholder="Typ een bericht..." disabled />
                     <button id="chatSendBtn" disabled>📨</button>
                 </div>
+
+                <!-- NIEUW: Kaart met locaties -->
+                <div id="map"></div>
 
                 <div class="admin-bar">
                     <button class="btn btn-warning" id="nextCaseBtn" style="display:none;">➡️ Volgende casus</button>
@@ -585,6 +600,8 @@
     const liveMsgInput = $('liveMsgInput');
     const liveMsgSendBtn = $('liveMsgSendBtn');
     const liveMsgContainer = $('liveMsgContainer');
+    // Nieuwe kaart referentie
+    const mapDiv = $('map');
 
     // ----- STATE -----
     let peer = null;
@@ -615,6 +632,12 @@
     const TEACHER_CODE = "docent123"; // NIEUW - pas aan indien gewenst
     // Nieuwe variabele voor live feed listener
     let liveMsgUnsubscribe = null;
+    // Nieuwe variabelen voor kaart
+    let map = null;
+    let markersLayer = null;
+    let locationRef = null;
+    let locationUnsubscribe = null;
+    let myLocationSent = false;
 
     function generateId() { return 'P-' + Math.random().toString(36).substr(2, 8); }
 
@@ -873,6 +896,70 @@
             }
             // Admin-lijst bijwerken als docent
             if (isAdmin) renderAdminList(data);
+        });
+    }
+
+    // ----- KAART: locatie delen en tonen -----
+    function startLocationSharing() {
+        if (!mapDiv) return;
+        // Initialiseer kaart
+        if (!map) {
+            map = L.map('map').setView([52.1326, 5.2913], 13); // Centraal Nederland
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+            markersLayer = L.layerGroup().addTo(map);
+        }
+        // Vraag geolocatie aan en schrijf naar Firebase
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+                    locationRef = ref(db, `locaties/${myClass}/${myId}`);
+                    set(locationRef, {
+                        username: myUsername,
+                        role: myRole,
+                        lat: lat,
+                        lng: lng,
+                        timestamp: serverTimestamp()
+                    }).then(() => {
+                        console.log('Locatie opgeslagen');
+                        myLocationSent = true;
+                    }).catch(err => console.error('Fout bij opslaan locatie:', err));
+                },
+                (error) => {
+                    console.warn('Geolocatie niet beschikbaar:', error);
+                    // Optioneel: fallback locatie (bijv. school) plaatsen
+                    locationRef = ref(db, `locaties/${myClass}/${myId}`);
+                    set(locationRef, {
+                        username: myUsername,
+                        role: myRole,
+                        lat: 52.1326,
+                        lng: 5.2913,
+                        timestamp: serverTimestamp(),
+                        fallback: true
+                    }).catch(err => console.error('Fout bij fallback:', err));
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+            );
+        } else {
+            console.warn('Geolocatie wordt niet ondersteund door browser');
+        }
+
+        // Luister naar locaties van de klas en update markers
+        const locRef = ref(db, `locaties/${myClass}`);
+        if (locationUnsubscribe) locationUnsubscribe();
+        locationUnsubscribe = onValue(locRef, (snapshot) => {
+            const data = snapshot.val();
+            if (!data) return;
+            // Wis huidige markers en voeg nieuwe toe
+            markersLayer.clearLayers();
+            for (let [id, loc] of Object.entries(data)) {
+                if (!loc.lat || !loc.lng) continue;
+                const marker = L.marker([loc.lat, loc.lng]).addTo(markersLayer);
+                marker.bindPopup(`<strong>${loc.username}</strong><br>Rol: ${loc.role}`);
+            }
         });
     }
 
@@ -1171,6 +1258,7 @@
             await remove(ref(db, `cases/${myClass}`));
             await remove(ref(db, `mutaties/${myClass}`));
             await remove(ref(db, `liveberichten/${myClass}`));
+            await remove(ref(db, `locaties/${myClass}`)); // NIEUW
         } catch (err) {
             console.error('Fout bij resetten:', err);
         }
@@ -1187,6 +1275,7 @@
         if (caseUnsubscribe) caseUnsubscribe();
         if (mutatieUnsubscribe) mutatieUnsubscribe();
         if (liveMsgUnsubscribe) liveMsgUnsubscribe();
+        if (locationUnsubscribe) locationUnsubscribe(); // NIEUW
         if (myPeerListener) myPeerListener();
         if (localStream) {
             localStream.getTracks().forEach(t => t.stop());
@@ -1213,6 +1302,12 @@
         saveIndicator.textContent = '';
         livefeedContainer.innerHTML = '<div class="empty-state">⏳ Wachten op mutatie...</div>';
         liveMsgContainer.innerHTML = '';
+        // Kaart opruimen
+        if (map) {
+            map.remove();
+            map = null;
+            markersLayer = null;
+        }
     }
 
     // ----- HOOFDFUNCTIE (verbinden) -----
@@ -1289,6 +1384,7 @@
         feedKlas.textContent = myClass;
         loadLivefeed();
         loadLiveMessages(); // NIEUW
+        startLocationSharing(); // NIEUW: start kaart en locatie
 
         currentCaseName.textContent = currentScenario.naam;
         updateRoleInfo();
@@ -1425,6 +1521,8 @@
         if (peerListUnsubscribe) peerListUnsubscribe();
         if (myPeerListener) myPeerListener();
         if (liveMsgUnsubscribe) liveMsgUnsubscribe();
+        if (locationUnsubscribe) locationUnsubscribe(); // NIEUW
+        if (locationRef) remove(locationRef); // NIEUW: verwijder eigen locatie
         if (peersRef) {
             const myPeerRef = ref(db, `porto_peers/${myClass}/${myId}`);
             remove(myPeerRef);
@@ -1451,6 +1549,12 @@
         resetBtn.style.display = 'none';
         nextCaseBtn.style.display = 'none';
         adminTabBtn.style.display = 'none';
+        // Kaart opruimen
+        if (map) {
+            map.remove();
+            map = null;
+            markersLayer = null;
+        }
     });
 
     // Tab switching
