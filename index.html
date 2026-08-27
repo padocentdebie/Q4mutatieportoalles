@@ -1081,10 +1081,17 @@
     function nextCase() {
         if (!isAdmin) return;
         currentCaseIndex++;
-        loadCase(currentCaseIndex);
         livefeedContainer.innerHTML = '<div class="empty-state">⏳ Wachten op mutatie...</div>';
         const mutRef = getMutatieRef();
         remove(mutRef);
+        // Alleen de casus opslaan, loadCase wordt door de listener uitgevoerd
+        const caseRef = getCaseRef();
+        set(caseRef, {
+            index: currentCaseIndex,
+            scenarioId: SCENARIOS[currentCaseIndex] ? SCENARIOS[currentCaseIndex].id : null,
+            naam: SCENARIOS[currentCaseIndex] ? SCENARIOS[currentCaseIndex].naam : 'Afgerond',
+            timestamp: serverTimestamp()
+        });
     }
 
     // ----- MUTATIE OPSLAAN -----
@@ -1425,20 +1432,18 @@
         caseUnsubscribe = onValue(caseRef, (snapshot) => {
             const data = snapshot.val();
             if (data && data.index !== undefined) {
-                currentCaseIndex = data.index;
-                const scenario = SCENARIOS[currentCaseIndex];
-                if (scenario) {
-                    currentScenario = scenario;
-                    currentCaseName.textContent = scenario.naam;
-                    updateRoleInfo();
-                } else {
-                    currentScenario = null;
-                    currentCaseName.textContent = 'Alle casussen afgerond! 🎉';
-                    updateRoleInfo();
+                const newIndex = data.index;
+                // Alleen reageren als de casus daadwerkelijk verandert
+                if (newIndex !== currentCaseIndex) {
+                    currentCaseIndex = newIndex;
+                    loadCase(currentCaseIndex);
                 }
             } else {
-                currentCaseIndex = 0;
-                loadCase(0);
+                // Geen casus aanwezig -> start bij casus 0 (alleen als dat nog niet het geval is)
+                if (currentCaseIndex !== 0) {
+                    currentCaseIndex = 0;
+                    loadCase(0);
+                }
             }
         });
 
